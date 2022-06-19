@@ -1,62 +1,67 @@
 package emu.grasscutter.game.entity;
 
-import emu.grasscutter.GenshinConstants;
-import emu.grasscutter.data.GenshinData;
-import emu.grasscutter.data.def.AvatarData;
-import emu.grasscutter.data.def.AvatarSkillDepotData;
-import emu.grasscutter.game.GenshinPlayer;
-import emu.grasscutter.game.GenshinScene;
-import emu.grasscutter.game.World;
-import emu.grasscutter.game.avatar.GenshinAvatar;
+import emu.grasscutter.GameConstants;
+import emu.grasscutter.data.GameData;
+import emu.grasscutter.data.excels.AvatarData;
+import emu.grasscutter.data.excels.AvatarSkillDepotData;
+import emu.grasscutter.game.avatar.Avatar;
 import emu.grasscutter.game.inventory.EquipType;
-import emu.grasscutter.game.inventory.GenshinItem;
+import emu.grasscutter.game.inventory.GameItem;
+import emu.grasscutter.game.player.Player;
 import emu.grasscutter.game.props.EntityIdType;
 import emu.grasscutter.game.props.FightProperty;
 import emu.grasscutter.game.props.PlayerProperty;
+import emu.grasscutter.game.world.Scene;
 import emu.grasscutter.net.proto.AbilityControlBlockOuterClass.AbilityControlBlock;
 import emu.grasscutter.net.proto.AbilityEmbryoOuterClass.AbilityEmbryo;
 import emu.grasscutter.net.proto.AbilitySyncStateInfoOuterClass.AbilitySyncStateInfo;
 import emu.grasscutter.net.proto.AnimatorParameterValueInfoPairOuterClass.AnimatorParameterValueInfoPair;
+import emu.grasscutter.net.proto.ChangeHpReasonOuterClass.ChangeHpReason;
 import emu.grasscutter.net.proto.EntityAuthorityInfoOuterClass.EntityAuthorityInfo;
 import emu.grasscutter.net.proto.EntityClientDataOuterClass.EntityClientData;
 import emu.grasscutter.net.proto.EntityRendererChangedInfoOuterClass.EntityRendererChangedInfo;
 import emu.grasscutter.net.proto.FightPropPairOuterClass.FightPropPair;
 import emu.grasscutter.net.proto.PlayerDieTypeOuterClass.PlayerDieType;
+import emu.grasscutter.net.proto.PropChangeReasonOuterClass.PropChangeReason;
 import emu.grasscutter.net.proto.PropPairOuterClass.PropPair;
 import emu.grasscutter.net.proto.ProtEntityTypeOuterClass.ProtEntityType;
 import emu.grasscutter.net.proto.SceneAvatarInfoOuterClass.SceneAvatarInfo;
 import emu.grasscutter.net.proto.SceneEntityAiInfoOuterClass.SceneEntityAiInfo;
 import emu.grasscutter.net.proto.SceneEntityInfoOuterClass.SceneEntityInfo;
 import emu.grasscutter.net.proto.VectorOuterClass.Vector;
+import emu.grasscutter.server.packet.send.PacketAvatarFightPropUpdateNotify;
+import emu.grasscutter.server.packet.send.PacketEntityFightPropChangeReasonNotify;
 import emu.grasscutter.utils.Position;
 import emu.grasscutter.utils.ProtoHelper;
 import emu.grasscutter.utils.Utils;
 import it.unimi.dsi.fastutil.ints.Int2FloatMap;
 import it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap;
 
-public class EntityAvatar extends GenshinEntity {
-	private final GenshinAvatar avatar;
+public class EntityAvatar extends GameEntity {
+	private final Avatar avatar;
 	
 	private PlayerDieType killedType;
 	private int killedBy;
 	
-	public EntityAvatar(GenshinScene scene, GenshinAvatar avatar) {
+	public EntityAvatar(Scene scene, Avatar avatar) {
 		super(scene);
 		this.avatar = avatar;
+		this.avatar.setCurrentEnergy();
 		this.id = getScene().getWorld().getNextEntityId(EntityIdType.AVATAR);
 		
-		GenshinItem weapon = this.getAvatar().getWeapon();
+		GameItem weapon = this.getAvatar().getWeapon();
 		if (weapon != null) {
 			weapon.setWeaponEntityId(getScene().getWorld().getNextEntityId(EntityIdType.WEAPON));
 		}
 	}
 	
-	public EntityAvatar(GenshinAvatar avatar) {
+	public EntityAvatar(Avatar avatar) {
 		super(null);
 		this.avatar = avatar;
+		this.avatar.setCurrentEnergy();
 	}
 
-	public GenshinPlayer getPlayer() {
+	public Player getPlayer() {
 		return avatar.getPlayer();
 	}
 
@@ -70,7 +75,7 @@ public class EntityAvatar extends GenshinEntity {
 		return getPlayer().getRotation();
 	}
 
-	public GenshinAvatar getAvatar() {
+	public Avatar getAvatar() {
 		return avatar;
 	}
 	
@@ -101,13 +106,72 @@ public class EntityAvatar extends GenshinEntity {
 
 	@Override
 	public void onDeath(int killerId) {
-		this.killedType = PlayerDieType.PlayerDieKillByMonster;
+		this.killedType = PlayerDieType.PLAYER_DIE_TYPE_KILL_BY_MONSTER;
 		this.killedBy = killerId;
+		clearEnergy(PropChangeReason.PROP_CHANGE_REASON_STATUE_RECOVER);
 	}
+
+	public void onDeath(PlayerDieType dieType, int killerId) {
+		this.killedType = dieType;
+		this.killedBy = killerId;
+		clearEnergy(PropChangeReason.PROP_CHANGE_REASON_STATUE_RECOVER);
+	}
+	
+	@Override
+	public float heal(float amount) {
+		float healed = super.heal(amount);
+		
+		if (healed > 0f) {
+			getScene().broadcastPacket(
+				new PacketEntityFightPropChangeReasonNotify(this, FightProperty.FIGHT_PROP_CUR_HP, healed, PropChangeReason.PROP_CHANGE_REASON_ABILITY, ChangeHpReason.CHANGE_HP_REASON_CHANGE_HP_ADD_ABILITY)
+			);
+		}
+		
+		return healed;
+	}
+	
+	public void clearEnergy(PropChangeReason reason) {
+		FightProperty curEnergyProp = this.getAvatar().getSkillDepot().getElementType().getCurEnergyProp();
+		this.avatar.setCurrentEnergy(curEnergyProp, 0);
+			
+		this.getScene().broadcastPacket(new PacketAvatarFightPropUpdateNotify(this.getAvatar(), curEnergyProp));
+		this.getScene().broadcastPacket(new PacketEntityFightPropChangeReasonNotify(this, curEnergyProp, 0f, reason));
+	}
+
+	public void addEnergy(float amount, PropChangeReason reason) {
+		this.addEnergy(amount, reason, false);
+	}
+	public void addEnergy(float amount, PropChangeReason reason, boolean isFlat) {
+		// Get current and maximum energy for this avatar.
+		FightProperty curEnergyProp = this.getAvatar().getSkillDepot().getElementType().getCurEnergyProp();
+		FightProperty maxEnergyProp = this.getAvatar().getSkillDepot().getElementType().getMaxEnergyProp();
+
+		float curEnergy = this.getFightProperty(curEnergyProp);
+		float maxEnergy = this.getFightProperty(maxEnergyProp);
+		
+		// Get energy recharge.
+		float energyRecharge = this.getFightProperty(FightProperty.FIGHT_PROP_CHARGE_EFFICIENCY);
+
+		// Scale amount by energy recharge, if the amount is not flat.
+		if (!isFlat) {
+			amount *= energyRecharge;
+		}
+
+		// Determine the new energy value.
+		float newEnergy = Math.min(curEnergy + amount, maxEnergy);
+		
+		// Set energy and notify.
+		if (newEnergy != curEnergy) {
+			this.avatar.setCurrentEnergy(curEnergyProp, newEnergy);
+			
+			this.getScene().broadcastPacket(new PacketAvatarFightPropUpdateNotify(this.getAvatar(), curEnergyProp));
+			this.getScene().broadcastPacket(new PacketEntityFightPropChangeReasonNotify(this, curEnergyProp, newEnergy, reason));
+		}
+	} 
 	
 	public SceneAvatarInfo getSceneAvatarInfo() {
 		SceneAvatarInfo.Builder avatarInfo = SceneAvatarInfo.newBuilder()
-				.setPlayerId(this.getPlayer().getUid())
+				.setUid(this.getPlayer().getUid())
 				.setAvatarId(this.getAvatar().getAvatarId())
 				.setGuid(this.getAvatar().getGuid())
 				.setPeerId(this.getPlayer().getPeerId())
@@ -122,7 +186,7 @@ public class EntityAvatar extends GenshinEntity {
 				.setCostumeId(this.getAvatar().getCostume())
 				.setBornTime(this.getAvatar().getBornTime());
 		
-		for (GenshinItem item : avatar.getEquips().values()) {
+		for (GameItem item : avatar.getEquips().values()) {
 			if (item.getItemData().getEquipType() == EquipType.EQUIP_WEAPON) {
 				avatarInfo.setWeapon(item.createSceneWeaponInfo());
 			} else {
@@ -145,7 +209,7 @@ public class EntityAvatar extends GenshinEntity {
 		
 		SceneEntityInfo.Builder entityInfo = SceneEntityInfo.newBuilder()
 				.setEntityId(getId())
-				.setEntityType(ProtEntityType.ProtEntityAvatar)
+				.setEntityType(ProtEntityType.PROT_ENTITY_TYPE_AVATAR)
 				.addAnimatorParaList(AnimatorParameterValueInfoPair.newBuilder())
 				.setEntityClientData(EntityClientData.newBuilder())
 				.setEntityAuthorityInfo(authority)
@@ -161,7 +225,7 @@ public class EntityAvatar extends GenshinEntity {
 			if (entry.getIntKey() == 0) {
 				continue;
 			}
-			FightPropPair fightProp = FightPropPair.newBuilder().setType(entry.getIntKey()).setPropValue(entry.getFloatValue()).build();
+			FightPropPair fightProp = FightPropPair.newBuilder().setPropType(entry.getIntKey()).setPropValue(entry.getFloatValue()).build();
 			entityInfo.addFightPropList(fightProp);
 		}
 		
@@ -187,17 +251,17 @@ public class EntityAvatar extends GenshinEntity {
 				AbilityEmbryo emb = AbilityEmbryo.newBuilder()
 						.setAbilityId(++embryoId)
 						.setAbilityNameHash(id)
-						.setAbilityOverrideNameHash(GenshinConstants.DEFAULT_ABILITY_NAME)
+						.setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
 						.build();
 				abilityControlBlock.addAbilityEmbryoList(emb);
 			}
 		}
 		// Add default abilities 
-		for (int id : GenshinConstants.DEFAULT_ABILITY_HASHES) {
+		for (int id : GameConstants.DEFAULT_ABILITY_HASHES) {
 			AbilityEmbryo emb = AbilityEmbryo.newBuilder()
 					.setAbilityId(++embryoId)
 					.setAbilityNameHash(id)
-					.setAbilityOverrideNameHash(GenshinConstants.DEFAULT_ABILITY_NAME)
+					.setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
 					.build();
 			abilityControlBlock.addAbilityEmbryoList(emb);
 		}
@@ -206,18 +270,18 @@ public class EntityAvatar extends GenshinEntity {
 			AbilityEmbryo emb = AbilityEmbryo.newBuilder()
 					.setAbilityId(++embryoId)
 					.setAbilityNameHash(id)
-					.setAbilityOverrideNameHash(GenshinConstants.DEFAULT_ABILITY_NAME)
+					.setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
 					.build();
 			abilityControlBlock.addAbilityEmbryoList(emb);
 		}
 		// Add skill depot abilities
-		AvatarSkillDepotData skillDepot = GenshinData.getAvatarSkillDepotDataMap().get(this.getAvatar().getSkillDepotId());
+		AvatarSkillDepotData skillDepot = GameData.getAvatarSkillDepotDataMap().get(this.getAvatar().getSkillDepotId());
 		if (skillDepot != null && skillDepot.getAbilities() != null) {
 			for (int id : skillDepot.getAbilities()) {
 				AbilityEmbryo emb = AbilityEmbryo.newBuilder()
 						.setAbilityId(++embryoId)
 						.setAbilityNameHash(id)
-						.setAbilityOverrideNameHash(GenshinConstants.DEFAULT_ABILITY_NAME)
+						.setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
 						.build();
 				abilityControlBlock.addAbilityEmbryoList(emb);
 			}
@@ -228,7 +292,7 @@ public class EntityAvatar extends GenshinEntity {
 				AbilityEmbryo emb = AbilityEmbryo.newBuilder()
 						.setAbilityId(++embryoId)
 						.setAbilityNameHash(Utils.abilityHash(skill))
-						.setAbilityOverrideNameHash(GenshinConstants.DEFAULT_ABILITY_NAME)
+						.setAbilityOverrideNameHash(GameConstants.DEFAULT_ABILITY_NAME)
 						.build();
 				abilityControlBlock.addAbilityEmbryoList(emb);
 			}
@@ -236,5 +300,5 @@ public class EntityAvatar extends GenshinEntity {
 		
 		//
 		return abilityControlBlock.build();
-	} 
+	}
 }

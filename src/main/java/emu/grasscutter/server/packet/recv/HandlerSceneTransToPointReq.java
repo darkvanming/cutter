@@ -1,7 +1,7 @@
 package emu.grasscutter.server.packet.recv;
 
-import emu.grasscutter.data.GenshinData;
-import emu.grasscutter.data.custom.ScenePointEntry;
+import emu.grasscutter.data.GameData;
+import emu.grasscutter.data.binout.ScenePointEntry;
 import emu.grasscutter.net.packet.Opcodes;
 import emu.grasscutter.net.packet.PacketOpcodes;
 import emu.grasscutter.net.proto.SceneTransToPointReqOuterClass.SceneTransToPointReq;
@@ -19,7 +19,7 @@ public class HandlerSceneTransToPointReq extends PacketHandler {
 		SceneTransToPointReq req = SceneTransToPointReq.parseFrom(payload);
 		
 		String code = req.getSceneId() + "_" + req.getPointId();
-		ScenePointEntry scenePointEntry = GenshinData.getScenePointEntries().get(code);
+		ScenePointEntry scenePointEntry = GameData.getScenePointEntries().get(code);
 		
 		if (scenePointEntry != null) {
 			float x = scenePointEntry.getPointData().getTranPos().getX();

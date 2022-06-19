@@ -3,20 +3,25 @@ package emu.grasscutter.command.commands;
 import emu.grasscutter.Grasscutter;
 import emu.grasscutter.command.Command;
 import emu.grasscutter.command.CommandHandler;
-import emu.grasscutter.game.GenshinPlayer;
+import emu.grasscutter.game.player.Player;
 
 import java.util.List;
 
-@Command(label = "reload", usage = "reload",
-        description = "Reload server config", permission = "server.reload")
+import static emu.grasscutter.utils.Language.translate;
+
+@Command(label = "reload", usage = "reload", permission = "server.reload", description = "commands.reload.description", targetRequirement = Command.TargetRequirement.NONE)
 public final class ReloadCommand implements CommandHandler {
 
     @Override
-    public void execute(GenshinPlayer sender, List<String> args) {
-        CommandHandler.sendMessage(sender, "Reloading config.");
+    public void execute(Player sender, Player targetPlayer, List<String> args) {
+        CommandHandler.sendMessage(sender, translate(sender, "commands.reload.reload_start"));
+        
         Grasscutter.loadConfig();
+        Grasscutter.loadLanguage();
         Grasscutter.getGameServer().getGachaManager().load();
-        Grasscutter.getDispatchServer().loadQueries();
-        CommandHandler.sendMessage(sender, "Reload complete.");
+        Grasscutter.getGameServer().getDropManager().load();
+        Grasscutter.getGameServer().getShopManager().load();
+        
+        CommandHandler.sendMessage(sender, translate(sender, "commands.reload.reload_done"));
     }
 }

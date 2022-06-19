@@ -1,89 +1,88 @@
 package emu.grasscutter.database;
 
-import com.mongodb.MongoClient;
-import com.mongodb.MongoClientURI;
 import com.mongodb.MongoCommandException;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.MongoIterable;
 
 import dev.morphia.Datastore;
 import dev.morphia.Morphia;
+import dev.morphia.mapping.MapperOptions;
+import dev.morphia.query.experimental.filters.Filters;
 import emu.grasscutter.Grasscutter;
+import emu.grasscutter.Grasscutter.ServerRunMode;
 import emu.grasscutter.game.Account;
-import emu.grasscutter.game.GenshinPlayer;
-import emu.grasscutter.game.avatar.GenshinAvatar;
+import emu.grasscutter.game.avatar.Avatar;
 import emu.grasscutter.game.friends.Friendship;
-import emu.grasscutter.game.inventory.GenshinItem;
+import emu.grasscutter.game.gacha.GachaRecord;
+import emu.grasscutter.game.inventory.GameItem;
+import emu.grasscutter.game.mail.Mail;
+import emu.grasscutter.game.player.Player;
+import emu.grasscutter.game.quest.GameMainQuest;
+import emu.grasscutter.game.quest.GameQuest;
+
+import static emu.grasscutter.Configuration.*;
 
 public final class DatabaseManager {
-	private static MongoClient mongoClient;
-	private static MongoClient dispatchMongoClient;
-
-	private static Datastore datastore;
+	private static Datastore gameDatastore;
 	private static Datastore dispatchDatastore;
 	
 	private static final Class<?>[] mappedClasses = new Class<?>[] {
-		DatabaseCounter.class, Account.class, GenshinPlayer.class, GenshinAvatar.class, GenshinItem.class, Friendship.class
+		DatabaseCounter.class, Account.class, Player.class, Avatar.class, GameItem.class, Friendship.class, 
+		GachaRecord.class, Mail.class, GameMainQuest.class
 	};
     
-    public static MongoClient getMongoClient() {
-        return mongoClient;
+    public static Datastore getGameDatastore() {
+    	return gameDatastore;
     }
-
-	public static Datastore getDatastore() {
-		return datastore;
-	}
-
-	public static MongoDatabase getDatabase() {
-    	return getDatastore().getDatabase();
+    
+    public static MongoDatabase getGameDatabase() {
+    	return getGameDatastore().getDatabase();
     }
 
 	// Yes. I very dislike this method. However, this will be good for now.
 	// TODO: Add dispatch routes for player account management
 	public static Datastore getAccountDatastore() {
-		if(Grasscutter.getConfig().RunMode.equalsIgnoreCase("GAME_ONLY")) {
+		if(SERVER.runMode == ServerRunMode.GAME_ONLY) {
 			return dispatchDatastore;
 		} else {
-			return datastore;
+			return gameDatastore;
 		}
 	}
 	
 	public static void initialize() {
 		// Initialize
-		mongoClient = new MongoClient(new MongoClientURI(Grasscutter.getConfig().DatabaseUrl));
-		Morphia morphia = new Morphia();
+		MongoClient gameMongoClient = MongoClients.create(DATABASE.game.connectionUri);
 		
-		// TODO Update when migrating to Morphia 2.0
-		morphia.getMapper().getOptions().setStoreEmpties(true);
-		morphia.getMapper().getOptions().setStoreNulls(false);
-		morphia.getMapper().getOptions().setDisableEmbeddedIndexes(true);
-		
-		// Map
-		morphia.map(mappedClasses);
-		
-		// Build datastore
-		datastore = morphia.createDatastore(mongoClient, Grasscutter.getConfig().DatabaseCollection);
+		// Set mapper options.
+		MapperOptions mapperOptions = MapperOptions.builder()
+				.storeEmpties(true).storeNulls(false).build();
+		// Create data store.
+		gameDatastore = Morphia.createDatastore(gameMongoClient, DATABASE.game.collection, mapperOptions);
+		// Map classes.
+		gameDatastore.getMapper().map(mappedClasses);
 		
 		// Ensure indexes
 		try {
-			datastore.ensureIndexes();
-		} catch (MongoCommandException e) {
-			Grasscutter.getLogger().info("Mongo index error: ", e);
+			gameDatastore.ensureIndexes();
+		} catch (MongoCommandException exception) {
+			Grasscutter.getLogger().info("Mongo index error: ", exception);
 			// Duplicate index error
-			if (e.getCode() == 85) {
+			if (exception.getCode() == 85) {
 				// Drop all indexes and re add them
-				MongoIterable<String> collections = datastore.getDatabase().listCollectionNames();
+				MongoIterable<String> collections = gameDatastore.getDatabase().listCollectionNames();
 				for (String name : collections) {
-					datastore.getDatabase().getCollection(name).dropIndexes();
+					gameDatastore.getDatabase().getCollection(name).dropIndexes();
 				}
 				// Add back indexes
-				datastore.ensureIndexes();
+				gameDatastore.ensureIndexes();
 			}
 		}
 
-		if(Grasscutter.getConfig().RunMode.equalsIgnoreCase("GAME_ONLY")) {
-			dispatchMongoClient = new MongoClient(new MongoClientURI(Grasscutter.getConfig().getGameServerOptions().DispatchServerDatabaseUrl));
-			dispatchDatastore = morphia.createDatastore(dispatchMongoClient, Grasscutter.getConfig().getGameServerOptions().DispatchServerDatabaseCollection);
+		if(SERVER.runMode == ServerRunMode.GAME_ONLY) {
+			MongoClient dispatchMongoClient = MongoClients.create(DATABASE.server.connectionUri);
+			dispatchDatastore = Morphia.createDatastore(dispatchMongoClient, DATABASE.server.collection);
 
 			// Ensure indexes for dispatch server
 			try {
@@ -103,19 +102,19 @@ public final class DatabaseManager {
 			}
 		}
 	}
-	
+
 	public static synchronized int getNextId(Class<?> c) {
-		DatabaseCounter counter = getDatastore().createQuery(DatabaseCounter.class).field("_id").equal(c.getSimpleName()).find().tryNext();
+		DatabaseCounter counter = getGameDatastore().find(DatabaseCounter.class).filter(Filters.eq("_id", c.getSimpleName())).first();
 		if (counter == null) {
 			counter = new DatabaseCounter(c.getSimpleName());
 		}
 		try {
 			return counter.getNextId();
 		} finally {
-			getDatastore().save(counter);
+			getGameDatastore().save(counter);
 		}
 	}
-	
+
 	public static synchronized int getNextId(Object o) {
 		return getNextId(o.getClass());
 	}

@@ -2,21 +2,34 @@ package emu.grasscutter.command.commands;
 
 import emu.grasscutter.command.Command;
 import emu.grasscutter.command.CommandHandler;
-import emu.grasscutter.game.GenshinPlayer;
+import emu.grasscutter.game.player.Player;
 
 import java.util.List;
 
-@Command(label = "godmode", usage = "godmode [playerId]",
-        description = "Prevents you from taking damage", permission = "player.godmode")
+import static emu.grasscutter.utils.Language.translate;
+
+@Command(label = "godmode", usage = "godmode [on|off|toggle]", permission = "player.godmode", permissionTargeted = "player.godmode.others", description = "commands.godmode.description")
 public final class GodModeCommand implements CommandHandler {
 
     @Override
-    public void execute(GenshinPlayer sender, List<String> args) {
-        if (sender == null) {
-            CommandHandler.sendMessage(null, "Run this command in-game.");
-            return; // TODO: toggle player's godmode statue from console or other players
+    public void execute(Player sender, Player targetPlayer, List<String> args) {
+        boolean enabled = !targetPlayer.inGodmode();
+        if (args.size() == 1) {
+            switch (args.get(0).toLowerCase()) {
+                case "on":
+                    enabled = true;
+                    break;
+                case "off":
+                    enabled = false;
+                    break;
+                case "toggle":
+                    break;  // Already toggled
+                default:
+                    break;
+            }
         }
-        sender.setGodmode(!sender.inGodmode());
-        sender.dropMessage("Godmode is now " + (sender.inGodmode() ? "enabled" : "disabled") + ".");
+
+        targetPlayer.setGodmode(enabled);
+        CommandHandler.sendMessage(sender, translate(sender, "commands.godmode.success", (enabled ? translate(sender, "commands.status.enabled") : translate(sender, "commands.status.disabled")), targetPlayer.getNickname()));
     }
 }

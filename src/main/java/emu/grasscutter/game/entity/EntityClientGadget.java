@@ -1,11 +1,12 @@
 package emu.grasscutter.game.entity;
 
-import emu.grasscutter.game.GenshinPlayer;
-import emu.grasscutter.game.GenshinScene;
-import emu.grasscutter.game.World;
+import emu.grasscutter.game.player.Player;
 import emu.grasscutter.game.props.PlayerProperty;
+import emu.grasscutter.game.world.Scene;
+import emu.grasscutter.game.world.World;
 import emu.grasscutter.net.proto.AbilitySyncStateInfoOuterClass.AbilitySyncStateInfo;
 import emu.grasscutter.net.proto.AnimatorParameterValueInfoPairOuterClass.AnimatorParameterValueInfoPair;
+import emu.grasscutter.net.proto.ClientGadgetInfoOuterClass;
 import emu.grasscutter.net.proto.EntityAuthorityInfoOuterClass.EntityAuthorityInfo;
 import emu.grasscutter.net.proto.EntityClientDataOuterClass.EntityClientData;
 import emu.grasscutter.net.proto.EntityRendererChangedInfoOuterClass.EntityRendererChangedInfo;
@@ -22,8 +23,8 @@ import emu.grasscutter.utils.Position;
 import emu.grasscutter.utils.ProtoHelper;
 import it.unimi.dsi.fastutil.ints.Int2FloatOpenHashMap;
 
-public class EntityClientGadget extends EntityGadget {
-	private final GenshinPlayer owner;
+public class EntityClientGadget extends EntityBaseGadget {
+	private final Player owner;
 	
 	private final Position pos;
 	private final Position rot;
@@ -34,8 +35,10 @@ public class EntityClientGadget extends EntityGadget {
 	private int ownerEntityId;
 	private int targetEntityId;
 	private boolean asyncLoad;
+
+	private int originalOwnerEntityId;
 	
-	public EntityClientGadget(GenshinScene scene, GenshinPlayer player, EvtCreateGadgetNotify notify) {
+	public EntityClientGadget(Scene scene, Player player, EvtCreateGadgetNotify notify) {
 		super(scene);
 		this.owner = player;
 		this.id = notify.getEntityId();
@@ -47,6 +50,14 @@ public class EntityClientGadget extends EntityGadget {
 		this.ownerEntityId = notify.getPropOwnerEntityId();
 		this.targetEntityId = notify.getTargetEntityId();
 		this.asyncLoad = notify.getIsAsyncLoad();
+
+		GameEntity owner = scene.getEntityById(this.ownerEntityId);
+		if (owner instanceof EntityClientGadget ownerGadget) {
+			this.originalOwnerEntityId = ownerGadget.getOriginalOwnerEntityId();
+		}
+		else {
+			this.originalOwnerEntityId = this.ownerEntityId;
+		}
 	}
 	
 	@Override
@@ -54,7 +65,7 @@ public class EntityClientGadget extends EntityGadget {
 		return configId;
 	}
 	
-	public GenshinPlayer getOwner() {
+	public Player getOwner() {
 		return owner;
 	}
 	
@@ -76,6 +87,10 @@ public class EntityClientGadget extends EntityGadget {
 
 	public boolean isAsyncLoad() {
 		return this.asyncLoad;
+	}
+
+	public int getOriginalOwnerEntityId() {
+		return this.originalOwnerEntityId;
 	}
 
 	@Override
@@ -112,7 +127,7 @@ public class EntityClientGadget extends EntityGadget {
 		
 		SceneEntityInfo.Builder entityInfo = SceneEntityInfo.newBuilder()
 				.setEntityId(getId())
-				.setEntityType(ProtEntityType.ProtEntityGadget)
+				.setEntityType(ProtEntityType.PROT_ENTITY_TYPE_GADGET)
 				.setMotionInfo(MotionInfo.newBuilder().setPos(getPosition().toProto()).setRot(getRotation().toProto()).setSpeed(Vector.newBuilder()))
 				.addAnimatorParaList(AnimatorParameterValueInfoPair.newBuilder())
 				.setEntityClientData(EntityClientData.newBuilder())
@@ -125,7 +140,7 @@ public class EntityClientGadget extends EntityGadget {
 				.build();
 		entityInfo.addPropList(pair);
 		
-		GadgetClientParam clientGadget = GadgetClientParam.newBuilder()
+		ClientGadgetInfoOuterClass.ClientGadgetInfo clientGadget = ClientGadgetInfoOuterClass.ClientGadgetInfo.newBuilder()
 				.setCampId(this.getCampId())
 				.setCampType(this.getCampType())
 				.setOwnerEntityId(this.getOwnerEntityId())

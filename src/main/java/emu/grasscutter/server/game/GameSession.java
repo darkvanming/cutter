@@ -3,25 +3,36 @@ package emu.grasscutter.server.game;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
 
 import emu.grasscutter.Grasscutter;
+import emu.grasscutter.Grasscutter.ServerDebugMode;
 import emu.grasscutter.game.Account;
-import emu.grasscutter.game.GenshinPlayer;
-import emu.grasscutter.net.packet.GenshinPacket;
+import emu.grasscutter.game.player.Player;
+import emu.grasscutter.net.packet.BasePacket;
+import emu.grasscutter.net.packet.PacketOpcodes;
 import emu.grasscutter.net.packet.PacketOpcodesUtil;
-import emu.grasscutter.netty.MihoyoKcpChannel;
+import emu.grasscutter.netty.KcpChannel;
+import emu.grasscutter.server.event.game.SendPacketEvent;
 import emu.grasscutter.utils.Crypto;
 import emu.grasscutter.utils.FileUtils;
 import emu.grasscutter.utils.Utils;
+import io.jpower.kcp.netty.UkcpChannel;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
 
-public class GameSession extends MihoyoKcpChannel {
-	private GameServer server;
+import static emu.grasscutter.utils.Language.translate;
+import static emu.grasscutter.Configuration.*;
+
+public class GameSession extends KcpChannel {
+	private final GameServer server;
 	
 	private Account account;
-	private GenshinPlayer player;
+	private Player player;
 	
 	private boolean useSecretKey;
 	private SessionState state;
@@ -29,11 +40,30 @@ public class GameSession extends MihoyoKcpChannel {
 	private int clientTime;
 	private long lastPingTime;
 	private int lastClientSeq = 10;
-	
+
+	private final ChannelPipeline pipeline;
+	@Override
+	public void close() {
+		setState(SessionState.INACTIVE);
+		//send disconnection pack in case of reconnection
+		try {
+			send(new BasePacket(PacketOpcodes.ServerDisconnectClientNotify));
+		}catch (Throwable ignore){
+
+		}
+		super.close();
+	}
 	public GameSession(GameServer server) {
+		this(server,null);
+	}
+	public GameSession(GameServer server, ChannelPipeline pipeline) {
 		this.server = server;
 		this.state = SessionState.WAITING_FOR_TOKEN;
 		this.lastPingTime = System.currentTimeMillis();
+		this.pipeline = pipeline;
+		if(pipeline!=null) {
+			pipeline.addLast(this);
+		}
 	}
 	
 	public GameServer getServer() {
@@ -63,11 +93,11 @@ public class GameSession extends MihoyoKcpChannel {
 		return this.getAccount().getId();
 	}
 
-	public GenshinPlayer getPlayer() {
+	public Player getPlayer() {
 		return player;
 	}
 
-	public synchronized void setPlayer(GenshinPlayer player) {
+	public synchronized void setPlayer(Player player) {
 		this.player = player;
 		this.player.setSession(this);
 		this.player.setAccount(this.getAccount());
@@ -108,22 +138,26 @@ public class GameSession extends MihoyoKcpChannel {
 	
 	@Override
 	protected void onConnect() {
-		Grasscutter.getLogger().info("Client connected from " + getAddress().getHostString().toLowerCase());
+		Grasscutter.getLogger().info(translate("messages.game.connect", this.getAddress().getHostString().toLowerCase()));
 	}
 
 	@Override
-	protected synchronized void onDisconnect() { // Synchronize so we dont add character at the same time
-		Grasscutter.getLogger().info("Client disconnected from " + getAddress().getHostString().toLowerCase());
+	protected synchronized void onDisconnect() { // Synchronize so we don't add character at the same time.
+		Grasscutter.getLogger().info(translate("messages.game.disconnect", this.getAddress().getHostString().toLowerCase()));
 
 		// Set state so no more packets can be handled
 		this.setState(SessionState.INACTIVE);
-		
+
 		// Save after disconnecting
 		if (this.isLoggedIn()) {
-			// Save
-			getPlayer().onLogout();
-			// Remove from gameserver
-			getServer().getPlayers().remove(getPlayer().getUid());
+			Player player = getPlayer();
+			// Call logout event.
+			player.onLogout();
+		}
+		try {
+			pipeline.remove(this);
+		} catch (Throwable ignore) {
+
 		}
 	}
 	
@@ -133,54 +167,61 @@ public class GameSession extends MihoyoKcpChannel {
     }
     
     public void replayPacket(int opcode, String name) {
-    	String filePath = Grasscutter.getConfig().PACKETS_FOLDER + name;
+    	String filePath = PACKET(name);
 		File p = new File(filePath);
 		
 		if (!p.exists()) return;
 
 		byte[] packet = FileUtils.read(p);
 		
-		GenshinPacket genshinPacket = new GenshinPacket(opcode);
-		genshinPacket.setData(packet);
+		BasePacket basePacket = new BasePacket(opcode);
+		basePacket.setData(packet);
 		
-		// Log
-    	logPacket(genshinPacket.getOpcode());
-		
-		send(genshinPacket);
+		send(basePacket);
     }
     
-    public void send(GenshinPacket genshinPacket) {
+    public void send(BasePacket packet) {
     	// Test
-    	if (genshinPacket.getOpcode() <= 0) {
+    	if (packet.getOpcode() <= 0) {
     		Grasscutter.getLogger().warn("Tried to send packet with missing cmd id!");
     		return;
     	}
+
+		// DO NOT REMOVE (unless we find a way to validate code before sending to client which I don't think we can)
+		// Stop WindSeedClientNotify from being sent for security purposes.
+		if(PacketOpcodes.BANNED_PACKETS.contains(packet.getOpcode())) {
+			return;
+		}
     	
     	// Header
-    	if (genshinPacket.shouldBuildHeader()) {
-    		genshinPacket.buildHeader(this.getNextClientSequence());
+    	if (packet.shouldBuildHeader()) {
+    		packet.buildHeader(this.getNextClientSequence());
     	}
-    	
-    	// Build packet
-    	byte[] data = genshinPacket.build();
     	
     	// Log
-    	if (Grasscutter.getConfig().getGameServerOptions().LOG_PACKETS) {
-    		logPacket(genshinPacket);
+    	if (SERVER.debugLevel == ServerDebugMode.ALL) {
+    		logPacket(packet);
     	}
-    	
-    	// Send
-    	send(data);
+		
+		// Invoke event.
+		SendPacketEvent event = new SendPacketEvent(this, packet); event.call();
+    	if(!event.isCanceled()) // If event is not cancelled, continue.
+			this.send(event.getPacket().build());
     }
     
-    private void logPacket(int opcode) {
-    	//Grasscutter.getLogger().info("SEND: " + PacketOpcodesUtil.getOpcodeName(opcode));
-    	//System.out.println(Utils.bytesToHex(genshinPacket.getData()));
-    }
-    
-    private void logPacket(GenshinPacket genshinPacket) {
-    	Grasscutter.getLogger().info("SEND: " + PacketOpcodesUtil.getOpcodeName(genshinPacket.getOpcode()) + " (" + genshinPacket.getOpcode() + ")");
-    	System.out.println(Utils.bytesToHex(genshinPacket.getData()));
+	private static final Set<Integer> loopPacket = Set.of(
+			PacketOpcodes.PingReq,
+			PacketOpcodes.PingRsp,
+			PacketOpcodes.WorldPlayerRTTNotify,
+			PacketOpcodes.UnionCmdNotify,
+			PacketOpcodes.QueryPathReq
+	);
+
+    private void logPacket(BasePacket packet) {
+		if (!loopPacket.contains(packet.getOpcode())) {
+			Grasscutter.getLogger().info("SEND: " + PacketOpcodesUtil.getOpcodeName(packet.getOpcode()) + " (" + packet.getOpcode() + ")");
+			System.out.println(Utils.bytesToHex(packet.getData()));
+		}
     }
 
 	@Override
@@ -225,9 +266,11 @@ public class GameSession extends MihoyoKcpChannel {
 				}
 				
 				// Log packet
-				if (Grasscutter.getConfig().getGameServerOptions().LOG_PACKETS) {
-					Grasscutter.getLogger().info("RECV: " + PacketOpcodesUtil.getOpcodeName(opcode) + " (" + opcode + ")");
-					System.out.println(Utils.bytesToHex(payload));
+				if (SERVER.debugLevel == ServerDebugMode.ALL) {
+					if (!loopPacket.contains(opcode)) {
+						Grasscutter.getLogger().info("RECV: " + PacketOpcodesUtil.getOpcodeName(opcode) + " (" + opcode + ")");
+						System.out.println(Utils.bytesToHex(payload));
+					}
 				}
 				
 				// Handle
@@ -236,6 +279,7 @@ public class GameSession extends MihoyoKcpChannel {
 		} catch (Exception e) {
 			e.printStackTrace();
 		} finally {
+			data.release();
 			packet.release();
 		}
 	}
